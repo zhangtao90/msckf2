@@ -27,6 +27,8 @@
 #include "feature.hpp"
 #include <msckf_vio/CameraMeasurement.h>
 
+#include <fstream>
+
 namespace msckf_vio {
 /*
  * @brief MsckfVio Implements the algorithm in
@@ -39,6 +41,8 @@ class MsckfVio {
   public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+    std::ofstream fp;
+
     // Constructor
     MsckfVio(ros::NodeHandle& pnh);
     // Disable copy and assign constructor
@@ -46,7 +50,7 @@ class MsckfVio {
     MsckfVio operator=(const MsckfVio&) = delete;
 
     // Destructor
-    ~MsckfVio() {}
+    ~MsckfVio();
 
     /*
      * @brief initialize Initialize the VIO.
@@ -62,6 +66,9 @@ class MsckfVio {
     typedef boost::shared_ptr<const MsckfVio> ConstPtr;
 
   private:
+
+  double init_time;
+  bool init_proc;
     /*
      * @brief StateServer Store one IMU states and several
      *    camera states for constructing measurement
@@ -162,6 +169,8 @@ class MsckfVio {
     void pruneCamStateBuffer();
     // Reset the system online if the uncertainty is too large.
     void onlineReset();
+
+    void takeSnapShot();
 
     // Chi squared test table.
     static std::map<int, double> chi_squared_test_table;

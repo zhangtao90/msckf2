@@ -3,10 +3,10 @@
   <arg name="robot" default="firefly_sbx"/>
   <arg name="fixed_frame_id" default="world"/>
   <arg name="calibration_file"
-    default="$(find msckf_vio)/config/camchain-imucam-euroc.yaml"/>
+    default="$(find msckf_vio)/config/camchain-imucam-kaist.yaml"/>
 
   <!-- Image Processor Nodelet  -->
-  <include file="$(find msckf_vio)/launch/image_processor_euroc.launch">
+  <include file="$(find msckf_vio)/launch/image_processor_kaist.launch">
     <arg name="robot" value="$(arg robot)"/>
     <arg name="calibration_file" value="$(arg calibration_file)"/>
   </include>
@@ -52,14 +52,14 @@
       <param name="initial_covariance/extrinsic_rotation_cov" value="3.0462e-4"/>
       <param name="initial_covariance/extrinsic_translation_cov" value="2.5e-5"/>
 
-      <remap from="~imu" to="/imu0"/>
+      <remap from="~imu" to="/imu/data_raw"/>
       <remap from="~features" to="image_processor/features"/>
 
     </node>
   </group>
 
   <node pkg="rviz" type="rviz" name="rviz_node" output="screen"
-    args="-d $(find msckf_vio)/rviz/rviz_euroc_config.rviz" required="true">
+    args="-d $(find msckf_vio)/rviz/rviz_kaist_config.rviz" required="true">
   </node>
 
 </launch>

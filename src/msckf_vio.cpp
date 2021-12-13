@@ -10,6 +10,8 @@
 #include <cmath>
 #include <iterator>
 #include <algorithm>
+#include <iomanip>
+
 
 #include <Eigen/SVD>
 #include <Eigen/QR>
@@ -53,8 +55,20 @@ map<int, double> MsckfVio::chi_squared_test_table;
 MsckfVio::MsckfVio(ros::NodeHandle& pnh):
   is_gravity_set(false),
   is_first_img(true),
+  init_time(0.0),
+  init_proc(true),
   nh(pnh) {
+    fp.open("/home/zhangtao/msckf_log.txt",std::fstream::out);
+    if(fp.fail())
+    {
+      std::cout << "log file open fail" << std::endl;
+    }
   return;
+}
+
+MsckfVio::~MsckfVio()
+{
+  fp.close();
 }
 
 bool MsckfVio::loadParameters() {
@@ -229,16 +243,32 @@ bool MsckfVio::initialize() {
 void MsckfVio::imuCallback(
     const sensor_msgs::ImuConstPtr& msg) {
 
+  if(init_proc)
+  {
+    init_time = msg->header.stamp.toSec();
+    init_proc = false;
+  }
+
   // IMU msgs are pushed backed into a buffer instead of
   // being processed immediately. The IMU msgs are processed
   // when the next image is available, in which way, we can
   // easily handle the transfer delay.
+  /*fp << "imuCallback, time acc gyro meas are: " << msg->header.stamp.toSec()-init_time << " " <<
+                                                   msg->linear_acceleration.x << " " <<
+                                                   msg->linear_acceleration.y << " " <<
+                                                   msg->linear_acceleration.z << " " <<
+                                                   msg->angular_velocity.x << " " <<
+                                                   msg->angular_velocity.y << " " <<
+                                                   msg->angular_velocity.z << std::endl;
+                                                   */
   imu_msg_buffer.push_back(*msg);
 
   if (!is_gravity_set) {
+  //fp << "!gravity not set, imu buffer len is " << imu_msg_buffer.size() << std::endl;
     if (imu_msg_buffer.size() < 200) return;
     //if (imu_msg_buffer.size() < 10) return;
     initializeGravityAndBias();
+    //fp << "!gravity&bias initialized" << std::endl;
     is_gravity_set = true;
   }
 
@@ -360,8 +390,18 @@ bool MsckfVio::resetCallback(
 void MsckfVio::featureCallback(
     const CameraMeasurementConstPtr& msg) {
 
+      static int feature_callback_cntr = 0;
+      feature_callback_cntr++;
+
   // Return if the gravity vector has not been set.
   if (!is_gravity_set) return;
+
+  fp << endl << std::fixed<< std::setprecision(16) << "featureCallback : " << feature_callback_cntr << " " << msg->header.stamp.toSec()<< " ";
+  for(int i = 0;i < msg->features.size();i++)
+  {
+    fp << msg->features[i].id << " ";
+  }
+  fp << std::endl;
 
   // Start the system if the first image is received.
   // The frame where the first image is received will be
@@ -388,6 +428,8 @@ void MsckfVio::featureCallback(
   double state_augmentation_time = (
       ros::Time::now()-start_time).toSec();
 
+  takeSnapShot();
+
   // Add new observations for existing features or new
   // features in the map server.
   start_time = ros::Time::now();
@@ -395,16 +437,22 @@ void MsckfVio::featureCallback(
   double add_observations_time = (
       ros::Time::now()-start_time).toSec();
 
+  takeSnapShot();
+
   // Perform measurement update if necessary.
   start_time = ros::Time::now();
   removeLostFeatures();
   double remove_lost_features_time = (
       ros::Time::now()-start_time).toSec();
 
+  takeSnapShot();
+
   start_time = ros::Time::now();
   pruneCamStateBuffer();
   double prune_cam_states_time = (
       ros::Time::now()-start_time).toSec();
+
+  takeSnapShot();
 
   // Publish the odometry.
   start_time = ros::Time::now();
@@ -508,7 +556,7 @@ void MsckfVio::mocapOdomCallback(
 void MsckfVio::batchImuProcessing(const double& time_bound) {
   // Counter how many IMU msgs in the buffer are used.
   int used_imu_msg_cntr = 0;
-
+  //fp << "process imu model at time " ;
   for (const auto& imu_msg : imu_msg_buffer) {
     double imu_time = imu_msg.header.stamp.toSec();
     if (imu_time < state_server.imu_state.time) {
@@ -524,12 +572,13 @@ void MsckfVio::batchImuProcessing(const double& time_bound) {
 
     // Execute process model.
     processModel(imu_time, m_gyro, m_acc);
+   //fp << " " << imu_time - init_time;
     ++used_imu_msg_cntr;
   }
 
   // Set the state ID for the new IMU state.
   state_server.imu_state.id = IMUState::next_id++;
-
+  //fp << endl << "imu id set to " << state_server.imu_state.id << std::endl;
   // Remove all used IMU msgs.
   imu_msg_buffer.erase(imu_msg_buffer.begin(),
       imu_msg_buffer.begin()+used_imu_msg_cntr);
@@ -716,6 +765,12 @@ void MsckfVio::stateAugmentation(const double& time) {
   cam_state.orientation_null = cam_state.orientation;
   cam_state.position_null = cam_state.position;
 
+  fp << "cam state augmented to [";
+  for(auto it = state_server.cam_states.begin();it != state_server.cam_states.end();++it) {
+    fp << it->first << " ";
+  }
+  fp << "* ]" << endl;
+
   // Update the covariance matrix of the state.
   // To simplify computation, the matrix J below is the nontrivial block
   // in Equation (16) in "A Multi-State Constraint Kalman Filter for Vision
@@ -751,6 +806,12 @@ void MsckfVio::stateAugmentation(const double& time) {
       state_server.state_cov.transpose()) / 2.0;
   state_server.state_cov = state_cov_fixed;
 
+/*  fp << "after state augmentation, states and covariance are:" << endl <<
+        state_server.imu_state.position.transpose() << " " <<
+        state_server.imu_state.velocity.transpose() << " " <<
+        state_server.imu_state.orientation.transpose() << endl;
+  fp << state_server.state_cov << endl;
+*/
   return;
 }
 
@@ -760,7 +821,7 @@ void MsckfVio::addFeatureObservations(
   StateIDType state_id = state_server.imu_state.id;
   int curr_feature_num = map_server.size();
   int tracked_feature_num = 0;
-
+  fp << "addFeatures" << endl;
   // Add new observations for existing features or new
   // features in the map server.
   for (const auto& feature : msg->features) {
@@ -770,14 +831,18 @@ void MsckfVio::addFeatureObservations(
       map_server[feature.id].observations[state_id] =
         Vector4d(feature.u0, feature.v0,
             feature.u1, feature.v1);
+      fp << feature.id << "* ";
     } else {
       // This is an old feature.
       map_server[feature.id].observations[state_id] =
         Vector4d(feature.u0, feature.v0,
             feature.u1, feature.v1);
       ++tracked_feature_num;
+      fp << feature.id << "* ";
     }
   }
+
+  fp << endl;
 
   tracking_rate =
     static_cast<double>(tracked_feature_num) /
@@ -965,6 +1030,8 @@ void MsckfVio::measurementUpdate(
   // Compute the error of the state.
   VectorXd delta_x = K * r_thin;
 
+  //fp << "delta_x is " << delta_x.transpose() << endl;
+
   // Update the IMU state.
   const VectorXd& delta_x_imu = delta_x.head<21>();
 
@@ -1047,15 +1114,22 @@ void MsckfVio::removeLostFeatures() {
   vector<FeatureIDType> invalid_feature_ids(0);
   vector<FeatureIDType> processed_feature_ids(0);
 
+  fp << "xxxxxxx removeLostFeatures process xxxxxxxxx : ";
   for (auto iter = map_server.begin();
       iter != map_server.end(); ++iter) {
     // Rename the feature to be checked.
     auto& feature = iter->second;
 
+    fp << "f" << iter->first << " ";
+
     // Pass the features that are still being tracked.
     if (feature.observations.find(state_server.imu_state.id) !=
-        feature.observations.end()) continue;
+        feature.observations.end()) {
+          fp << "trk  ";
+          continue;
+        }
     if (feature.observations.size() < 3) {
+      fp << "o<3  ";
       invalid_feature_ids.push_back(feature.id);
       continue;
     }
@@ -1064,19 +1138,31 @@ void MsckfVio::removeLostFeatures() {
     // has not been.
     if (!feature.is_initialized) {
       if (!feature.checkMotion(state_server.cam_states)) {
+        fp << "mof  ";
         invalid_feature_ids.push_back(feature.id);
         continue;
       } else {
         if(!feature.initializePosition(state_server.cam_states)) {
+          fp << "inf  ";
           invalid_feature_ids.push_back(feature.id);
           continue;
+        } else {
+          fp << "init with cam states: ";
+          for(auto it = state_server.cam_states.begin();it != state_server.cam_states.end();++it) {
+            if(feature.observations.find(it->first) != feature.observations.end()) {
+              fp<< it->first << " ";
+            }
+          }
         }
       }
     }
 
+    fp << "prc  ";
+
     jacobian_row_size += 4*feature.observations.size() - 3;
     processed_feature_ids.push_back(feature.id);
   }
+  fp << endl;
 
   //cout << "invalid/processed feature #: " <<
   //  invalid_feature_ids.size() << "/" <<
@@ -1095,6 +1181,8 @@ void MsckfVio::removeLostFeatures() {
   VectorXd r = VectorXd::Zero(jacobian_row_size);
   int stack_cntr = 0;
 
+  fp << "construct jacob: ";
+
   // Process the features which lose track.
   for (const auto& feature_id : processed_feature_ids) {
     auto& feature = map_server[feature_id];
@@ -1111,15 +1199,39 @@ void MsckfVio::removeLostFeatures() {
       H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
       r.segment(stack_cntr, r_j.rows()) = r_j;
       stack_cntr += H_xj.rows();
+      fp << feature.id << "@" << feature.observations.size()<< " ";
     }
 
     // Put an upper bound on the row size of measurement Jacobian,
     // which helps guarantee the executation time.
     if (stack_cntr > 1500) break;
   }
+  fp << endl;
 
   H_x.conservativeResize(stack_cntr, H_x.cols());
   r.conservativeResize(stack_cntr);
+
+  bool test1 = true;
+  for(int ii = 0;ii<H_x.rows() && test1;ii++) {
+    for(int jj = 0;jj < 21;jj++) {
+      if(H_x(ii, jj) != 0) {
+        test1 = false;
+        break;
+      }
+    }
+  }
+
+  bool test2 = true;
+  for(int ii = 0;ii<H_x.rows() && test2;ii++) {
+    for(int jj = H_x.cols()-1;jj >= H_x.cols()-6;jj--) {
+      if(H_x(ii, jj) != 0) {
+        test2 = false;
+        break;
+      }
+    }
+  }
+  fp << "(removing lost features) H shape is " << H_x.rows() << " features * " << H_x.cols() << " cam_states" << std::endl;
+  fp << "Hx pre21 are zero is " << test1 << " latest are zero is " << test2 << endl;
 
   // Perform the measurement update step.
   measurementUpdate(H_x, r);
@@ -1127,6 +1239,8 @@ void MsckfVio::removeLostFeatures() {
   // Remove all processed features from the map.
   for (const auto& feature_id : processed_feature_ids)
     map_server.erase(feature_id);
+
+
 
   return;
 }
@@ -1148,6 +1262,8 @@ void MsckfVio::findRedundantCamStates(
   const Matrix3d key_rotation = quaternionToRotation(
       key_cam_state_iter->second.orientation);
 
+  fp << "sel del cam sta ";
+
   // Mark the camera states to be removed based on the
   // motion between states.
   for (int i = 0; i < 2; ++i) {
@@ -1164,12 +1280,16 @@ void MsckfVio::findRedundantCamStates(
         distance < translation_threshold &&
         tracking_rate > tracking_rate_threshold) {
       rm_cam_state_ids.push_back(cam_state_iter->first);
+      fp << "C";
       ++cam_state_iter;
     } else {
       rm_cam_state_ids.push_back(first_cam_state_iter->first);
+      fp << "F";
       ++first_cam_state_iter;
     }
   }
+
+  fp << endl;
 
   // Sort the elements in the output vector.
   sort(rm_cam_state_ids.begin(), rm_cam_state_ids.end());
@@ -1179,13 +1299,23 @@ void MsckfVio::findRedundantCamStates(
 
 void MsckfVio::pruneCamStateBuffer() {
 
-  if (state_server.cam_states.size() < max_cam_state_size)
+  if (state_server.cam_states.size() < max_cam_state_size) {
+    fp << "cam buffer not full , dont prune" << endl;
     return;
-
+  }
+    
+  
   // Find two camera states to be removed.
   vector<StateIDType> rm_cam_state_ids(0);
   findRedundantCamStates(rm_cam_state_ids);
 
+  fp << "xxxxxxx pruneCamStateBuffer : ";
+  for(auto it = rm_cam_state_ids.begin();it != rm_cam_state_ids.end();++it) {
+    fp << *it << " ";
+  }
+  fp << endl;
+
+  fp << "for features: ";
   // Find the size of the Jacobian matrix.
   int jacobian_row_size = 0;
   for (auto& item : map_server) {
@@ -1199,8 +1329,12 @@ void MsckfVio::pruneCamStateBuffer() {
         involved_cam_state_ids.push_back(cam_id);
     }
 
-    if (involved_cam_state_ids.size() == 0) continue;
+    if (involved_cam_state_ids.size() == 0) {
+      fp << feature.id << "nci  ";
+      continue;
+    }
     if (involved_cam_state_ids.size() == 1) {
+      fp << feature.id << "1ce  ";
       feature.observations.erase(involved_cam_state_ids[0]);
       continue;
     }
@@ -1213,19 +1347,33 @@ void MsckfVio::pruneCamStateBuffer() {
         // to be removed.
         for (const auto& cam_id : involved_cam_state_ids)
           feature.observations.erase(cam_id);
+        fp << feature.id << "mf  ";
         continue;
       } else {
         if(!feature.initializePosition(state_server.cam_states)) {
           for (const auto& cam_id : involved_cam_state_ids)
             feature.observations.erase(cam_id);
+          fp << feature.id << "if  ";
           continue;
+        } else {
+          fp << feature.id << "init with cam states: ";
+          for(auto it = state_server.cam_states.begin();it != state_server.cam_states.end();++it) {
+            fp<< it->first << " ";
+          }
         }
       }
+    } else {
+      fp << feature.id;
     }
+    fp << "prc  ";
+    
 
     jacobian_row_size += 4*involved_cam_state_ids.size() - 3;
   }
 
+  fp << endl;
+
+  takeSnapShot();
   //cout << "jacobian row #: " << jacobian_row_size << endl;
 
   // Compute the Jacobian and residual.
@@ -1233,6 +1381,8 @@ void MsckfVio::pruneCamStateBuffer() {
       21+6*state_server.cam_states.size());
   VectorXd r = VectorXd::Zero(jacobian_row_size);
   int stack_cntr = 0;
+
+  fp << "construct jacobs: ";
 
   for (auto& item : map_server) {
     auto& feature = item.second;
@@ -1245,13 +1395,17 @@ void MsckfVio::pruneCamStateBuffer() {
         involved_cam_state_ids.push_back(cam_id);
     }
 
-    if (involved_cam_state_ids.size() == 0) continue;
+    if (involved_cam_state_ids.size() == 0) {
+      fp << feature.id << "nci  ";
+      continue;
+    }
 
     MatrixXd H_xj;
     VectorXd r_j;
     featureJacobian(feature.id, involved_cam_state_ids, H_xj, r_j);
 
     if (gatingTest(H_xj, r_j, involved_cam_state_ids.size())) {
+      fp << feature.id << "jac  ";
       H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
       r.segment(stack_cntr, r_j.rows()) = r_j;
       stack_cntr += H_xj.rows();
@@ -1261,8 +1415,33 @@ void MsckfVio::pruneCamStateBuffer() {
       feature.observations.erase(cam_id);
   }
 
+  fp << endl;
+
   H_x.conservativeResize(stack_cntr, H_x.cols());
   r.conservativeResize(stack_cntr);
+
+  bool test1 = true;
+  for(int ii = 0;ii<H_x.rows() && test1;ii++) {
+    for(int jj = 0;jj < 21;jj++) {
+      if(H_x(ii, jj) != 0) {
+        test1 = false;
+        break;
+      }
+    }
+  }
+
+  bool test2 = true;
+  for(int ii = 0;ii<H_x.rows() && test2;ii++) {
+    for(int jj = H_x.cols()-1;jj >= H_x.cols()-6;jj--) {
+      if(H_x(ii, jj) != 0) {
+        test2 = false;
+        break;
+      }
+    }
+  }
+  fp << "(prune cam states) H shape is : " << H_x.rows() << " features * " << H_x.cols() << " cam_states" << endl;
+  fp << "Hx pre21 are zero is " << test1 << " latest are zero is " << test2 << endl;
+
 
   // Perform measurement update.
   measurementUpdate(H_x, r);
@@ -1442,6 +1621,27 @@ void MsckfVio::publish(const ros::Time& time) {
   feature_pub.publish(feature_msg_ptr);
 
   return;
+}
+
+void MsckfVio::takeSnapShot() {
+  fp << "<<<<<<<<<<<< Snap Shot ! >>>>>>>>>>>>>" << endl;
+  fp << "f:[" << "\t";
+  for(auto it = map_server.begin();it != map_server.end();++it) {
+    fp << it->first << "\t";
+  }
+  fp << "]" << endl;
+
+  for(auto it = state_server.cam_states.begin();it != state_server.cam_states.end();++it) {
+    fp << "cam" << it->first << "\t";
+    for(auto itf = map_server.begin();itf != map_server.end();++itf) {
+      if(itf->second.observations.find(it->first) != itf->second.observations.end()) {
+        fp << "@\t";
+      } else {
+        fp << "\t";
+      }
+    }
+    fp << endl;
+  }
 }
 
 } // namespace msckf_vio
