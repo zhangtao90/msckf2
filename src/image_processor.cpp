@@ -71,21 +71,23 @@ bool ImageProcessor::loadParameters() {
   cam1_intrinsics[2] = cam1_intrinsics_temp[2];
   cam1_intrinsics[3] = cam1_intrinsics_temp[3];
 
-  vector<double> cam0_distortion_coeffs_temp(4);
+  vector<double> cam0_distortion_coeffs_temp(5);
   nh.getParam("cam0/distortion_coeffs",
       cam0_distortion_coeffs_temp);
   cam0_distortion_coeffs[0] = cam0_distortion_coeffs_temp[0];
   cam0_distortion_coeffs[1] = cam0_distortion_coeffs_temp[1];
   cam0_distortion_coeffs[2] = cam0_distortion_coeffs_temp[2];
   cam0_distortion_coeffs[3] = cam0_distortion_coeffs_temp[3];
+  cam0_distortion_coeffs[4] = cam0_distortion_coeffs_temp[4];
 
-  vector<double> cam1_distortion_coeffs_temp(4);
+  vector<double> cam1_distortion_coeffs_temp(5);
   nh.getParam("cam1/distortion_coeffs",
       cam1_distortion_coeffs_temp);
   cam1_distortion_coeffs[0] = cam1_distortion_coeffs_temp[0];
   cam1_distortion_coeffs[1] = cam1_distortion_coeffs_temp[1];
   cam1_distortion_coeffs[2] = cam1_distortion_coeffs_temp[2];
   cam1_distortion_coeffs[3] = cam1_distortion_coeffs_temp[3];
+  cam1_distortion_coeffs[4] = cam1_distortion_coeffs_temp[4];
 
   cv::Mat     T_imu_cam0 = utils::getTransformCV(nh, "cam0/T_cam_imu");
   cv::Matx33d R_imu_cam0(T_imu_cam0(cv::Rect(0,0,3,3)));
@@ -851,7 +853,7 @@ void ImageProcessor::undistortPoints(
     const vector<cv::Point2f>& pts_in,
     const cv::Vec4d& intrinsics,
     const string& distortion_model,
-    const cv::Vec4d& distortion_coeffs,
+    const cv::Vec<double, 5>& distortion_coeffs,
     vector<cv::Point2f>& pts_out,
     const cv::Matx33d &rectification_matrix,
     const cv::Vec4d &new_intrinsics) {
@@ -888,7 +890,7 @@ vector<cv::Point2f> ImageProcessor::distortPoints(
     const vector<cv::Point2f>& pts_in,
     const cv::Vec4d& intrinsics,
     const string& distortion_model,
-    const cv::Vec4d& distortion_coeffs) {
+    const cv::Vec<double, 5>& distortion_coeffs) {
 
   const cv::Matx33d K(intrinsics[0], 0.0, intrinsics[2],
                       0.0, intrinsics[1], intrinsics[3],
@@ -988,7 +990,7 @@ void ImageProcessor::twoPointRansac(
     const vector<Point2f>& pts1, const vector<Point2f>& pts2,
     const cv::Matx33f& R_p_c, const cv::Vec4d& intrinsics,
     const std::string& distortion_model,
-    const cv::Vec4d& distortion_coeffs,
+    const cv::Vec<double, 5>& distortion_coeffs,
     const double& inlier_error,
     const double& success_probability,
     vector<int>& inlier_markers) {

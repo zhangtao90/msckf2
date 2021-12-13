@@ -310,6 +310,9 @@ void MsckfVio::initializeGravityAndBias() {
   state_server.imu_state.orientation =
     rotationToQuaternion(q0_i_w.toRotationMatrix().transpose());
 
+  fp << "init complete, gyro bias as " << state_server.imu_state.gyro_bias.transpose() << std::endl;
+  fp << "Rotation init as Rwi : " << std::endl << q0_i_w.toRotationMatrix().transpose() << std::endl;
+
   return;
 }
 
@@ -414,6 +417,8 @@ void MsckfVio::featureCallback(
   static double max_processing_time = 0.0;
   static int critical_time_cntr = 0;
   double processing_start_time = ros::Time::now().toSec();
+
+
 
   // Propogate the IMU state.
   // that are received before the image msg.

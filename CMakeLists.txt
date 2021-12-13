@@ -107,18 +107,6 @@ target_link_libraries(msckf_vio_nodelet
   ${catkin_LIBRARIES}
 )
 
-add_executable(msckf_vio_node
-  src/msckf_vio_node.cpp
-)
-add_dependencies(msckf_vio_node
-  ${${PROJECT_NAME}_EXPORTED_TARGETS}
-  ${catkin_EXPORTED_TARGETS}
-)
-target_link_libraries(msckf_vio_node
-  msckf_vio
-  ${catkin_LIBRARIES}
-)
-
 # Image processor
 add_library(image_processor
   src/image_processor.cpp

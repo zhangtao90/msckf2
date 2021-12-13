@@ -259,7 +259,7 @@ private:
       const cv::Matx33f& R_p_c,
       const cv::Vec4d& intrinsics,
       const std::string& distortion_model,
-      const cv::Vec4d& distortion_coeffs,
+      const cv::Vec<double, 5>& distortion_coeffs,
       const double& inlier_error,
       const double& success_probability,
       std::vector<int>& inlier_markers);
@@ -267,7 +267,7 @@ private:
       const std::vector<cv::Point2f>& pts_in,
       const cv::Vec4d& intrinsics,
       const std::string& distortion_model,
-      const cv::Vec4d& distortion_coeffs,
+      const cv::Vec<double, 5>& distortion_coeffs,
       std::vector<cv::Point2f>& pts_out,
       const cv::Matx33d &rectification_matrix = cv::Matx33d::eye(),
       const cv::Vec4d &new_intrinsics = cv::Vec4d(1,1,0,0));
@@ -279,7 +279,7 @@ private:
       const std::vector<cv::Point2f>& pts_in,
       const cv::Vec4d& intrinsics,
       const std::string& distortion_model,
-      const cv::Vec4d& distortion_coeffs);
+      const cv::Vec<double, 5>& distortion_coeffs);
 
   /*
    * @brief stereoMatch Matches features with stereo image pairs.
@@ -335,12 +335,14 @@ private:
   std::string cam0_distortion_model;
   cv::Vec2i cam0_resolution;
   cv::Vec4d cam0_intrinsics;
-  cv::Vec4d cam0_distortion_coeffs;
+  //cv::Vec4d cam0_distortion_coeffs;
+  cv::Vec<double, 5> cam0_distortion_coeffs;
 
   std::string cam1_distortion_model;
   cv::Vec2i cam1_resolution;
   cv::Vec4d cam1_intrinsics;
-  cv::Vec4d cam1_distortion_coeffs;
+  //cv::Vec4d cam1_distortion_coeffs;
+  cv::Vec<double, 5> cam1_distortion_coeffs;
 
   // Take a vector from cam0 frame to the IMU frame.
   cv::Matx33d R_cam0_imu;
