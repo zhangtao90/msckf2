@@ -183,6 +183,8 @@ class MsckfVio {
     // Features used
     MapServer map_server;
 
+    std::map<int, int> featureliferec;
+
     // IMU data buffer
     // This is buffer is used to handle the unsynchronization or
     // transfer delay between IMU and Image messages.
@@ -228,10 +230,15 @@ class MsckfVio {
     // Whether to publish tf or not.
     bool publish_tf;
 
+    bool frd; // true : front-right-down      false : front-left-up
+    bool strict_wait_for_imu;
+
     // Framte rate of the stereo images. This variable is
     // only used to determine the timing threshold of
     // each iteration of the filter.
     double frame_rate;
+
+    double feature_time;
 
     // Debugging variables and functions
     void mocapOdomCallback(

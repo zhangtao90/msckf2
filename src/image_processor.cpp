@@ -12,11 +12,13 @@
 
 #include <sensor_msgs/image_encodings.h>
 #include <random_numbers/random_numbers.h>
+#include <nav_msgs/Odometry.h>
 
 #include <msckf_vio/CameraMeasurement.h>
 #include <msckf_vio/TrackingInfo.h>
 #include <msckf_vio/image_processor.h>
 #include <msckf_vio/utils.h>
+#include <msckf_vio/math_utils.hpp>
 
 using namespace std;
 using namespace cv;
@@ -30,10 +32,24 @@ ImageProcessor::ImageProcessor(ros::NodeHandle& n) :
   stereo_sub(10),
   prev_features_ptr(new GridFeatures()),
   curr_features_ptr(new GridFeatures()) {
+    fp.open("/home/zhangtao/dbglog/msckf/msckf_imgproc_log.txt",std::fstream::out);
+    if(fp.fail())
+    {
+      std::cout << "log file open fail" << std::endl;
+    }
+    last_pose = nh.subscribe<nav_msgs::Odometry>("/kaist/vio/odom", 10, &ImageProcessor::OdometryCallback, this);
   return;
 }
 
+void ImageProcessor::OdometryCallback(const nav_msgs::OdometryConstPtr& msg) {
+  last_vel.x() = msg->twist.twist.linear.x;
+  last_vel.y() = msg->twist.twist.linear.y;
+  last_vel.z() = msg->twist.twist.linear.z;
+  fp << "image processor speed callback is " << last_vel.transpose() << std::endl;
+}
+
 ImageProcessor::~ImageProcessor() {
+  fp.close();
   destroyAllWindows();
   //ROS_INFO("Feature lifetime statistics:");
   //featureLifetimeStatistics();
@@ -202,6 +218,7 @@ bool ImageProcessor::initialize() {
   detector_ptr = FastFeatureDetector::create(
       processor_config.fast_threshold);
 
+
   if (!createRosIO()) return false;
   ROS_INFO("Finish creating ROS IO...");
 
@@ -214,11 +231,26 @@ void ImageProcessor::stereoCallback(
 
   //cout << "==================================" << endl;
 
-  // Get the current image.
+// Get the current image.
+
+  /*
   cam0_curr_img_ptr = cv_bridge::toCvShare(cam0_img,
       sensor_msgs::image_encodings::MONO8);
   cam1_curr_img_ptr = cv_bridge::toCvShare(cam1_img,
       sensor_msgs::image_encodings::MONO8);
+  */
+  cv::Mat rgb0, rgb1; 
+
+  cam0_curr_img_ptr = cv_bridge::toCvCopy(cam0_img, cam0_img->encoding);
+  cam1_curr_img_ptr = cv_bridge::toCvCopy(cam1_img, cam1_img->encoding);
+
+
+  cv::cvtColor(cam0_curr_img_ptr->image, rgb0, CV_BayerRG2RGB);
+  cv::cvtColor(rgb0, cam0_curr_img_ptr->image, CV_RGB2GRAY);
+  cv::cvtColor(cam1_curr_img_ptr->image, rgb1, CV_BayerRG2RGB);
+  cv::cvtColor(rgb1, cam1_curr_img_ptr->image, CV_RGB2GRAY);
+
+  fp << "image shape is " << cam0_curr_img_ptr->image.rows << " " << cam0_curr_img_ptr->image.cols << std::endl;
 
   // Build the image pyramids once since they're used at multiple places
   createImagePyramids();
@@ -293,6 +325,7 @@ void ImageProcessor::imuCallback(
   // Wait for the first image to be set.
   if (is_first_img) return;
   imu_msg_buffer.push_back(*msg);
+  imu_msg_buffer2.push_back(*msg);
   return;
 }
 
@@ -416,6 +449,152 @@ void ImageProcessor::predictFeatureTracking(
   return;
 }
 
+void ImageProcessor::predictFeatureTracking(
+    const std::vector<cv::Point2f>& input_pts0,
+    const std::vector<cv::Point2f>& input_pts1,
+    const Eigen::Matrix3d& R_p_c,
+    const Eigen::Vector3d& t_p_c,
+    const cv::Vec4d& intrinsics0,
+    const cv::Vec4d& intrinsics1,
+    std::vector<cv::Point2f>& compensated_pts0,
+    std::vector<bool>& positive_depth) {
+
+  // Return directly if there are no input features.
+  if (input_pts0.size() == 0) {
+    compensated_pts0.clear();
+    return;
+  }
+  compensated_pts0.resize(input_pts0.size());
+
+  fp << "------------------ my feature prediction running ----------------" << std::endl;
+
+  fp << "prediction imu state is " << std::endl << R_p_c << std::endl << t_p_c.transpose() << std::endl;
+  std::vector<cv::Point2f> predic_pts0_undist(input_pts0.size());
+
+  fp << "input features are: " << std::endl << "\tcam0\tcam1" << std::endl;
+  for(int i = 0;i<input_pts0.size();i++) {
+    fp << "f" << i << "\t" << input_pts0[i].x << "\t" << input_pts1[i].x << std::endl;
+    fp << "\t" <<             input_pts0[i].y << "\t" << input_pts1[i].y << std::endl;
+    fp << "------" << std::endl;
+  }
+
+  // 1. triangulate all features in previous frame, with imu as origin 
+
+  std::vector<cv::Point2f> input_pts0_undist; 
+  std::vector<cv::Point2f> input_pts1_undist;
+
+  cv::Matx33f K0(
+    intrinsics0[0], 0.0, intrinsics0[2],
+    0.0, intrinsics0[1], intrinsics0[3],
+    0.0, 0.0, 1.0);
+  cv::Matx33f K1(
+    intrinsics1[0], 0.0, intrinsics1[2],
+    0.0, intrinsics1[1], intrinsics1[3],
+    0.0, 0.0, 1.0);
+
+  fp << "camera mat is " << std::endl << K0 << std::endl << K1 << std::endl;
+
+  cv::undistortPoints(input_pts0,input_pts0_undist,K0,cam0_distortion_coeffs, cv::noArray(), K0);
+  cv::undistortPoints(input_pts1,input_pts1_undist,K1,cam1_distortion_coeffs, cv::noArray(), K1);
+
+
+
+  fp << "after distortion: " << std::endl << "\tcam0\tcam1" << std::endl;
+  for(int i = 0;i<input_pts0.size();i++) {
+    fp << "f" << i << "\t" << input_pts0_undist[i].x << "\t" << input_pts1_undist[i].x << "\t" << 
+                  std::fabs(input_pts0_undist[i].x - input_pts1_undist[i].x) + fabs(input_pts0_undist[i].y - input_pts1_undist[i].y) << std::endl;
+    fp << "\t" <<             input_pts0_undist[i].y << "\t" << input_pts1_undist[i].y << std::endl;
+    fp << "------" << std::endl;
+  }
+
+  cv::Matx33d R_imu_cam0 = R_cam0_imu.t();
+  cv::Vec3d   t_imu_cam0 = -R_cam0_imu.t() * t_cam0_imu;
+  cv::Matx34f Tc0_imu(R_imu_cam0(0,0),R_imu_cam0(0,1),R_imu_cam0(0,2), t_imu_cam0[0], 
+                      R_imu_cam0(1,0),R_imu_cam0(1,1),R_imu_cam0(1,2), t_imu_cam0[1], 
+                      R_imu_cam0(2,0),R_imu_cam0(2,1),R_imu_cam0(2,2), t_imu_cam0[2]);
+
+  cv::Matx33d R_imu_cam1 = R_cam1_imu.t();
+  cv::Vec3d   t_imu_cam1 = -R_cam1_imu.t() * t_cam1_imu;
+  cv::Matx34f Tc1_imu(R_imu_cam1(0,0),R_imu_cam1(0,1),R_imu_cam1(0,2), t_imu_cam1[0], 
+                      R_imu_cam1(1,0),R_imu_cam1(1,1),R_imu_cam1(1,2), t_imu_cam1[1], 
+                      R_imu_cam1(2,0),R_imu_cam1(2,1),R_imu_cam1(2,2), t_imu_cam1[2]);
+
+  fp << "Tc0_imu " << Tc0_imu << std::endl;
+  fp << "Tc1_imu " << Tc1_imu << std::endl;
+
+  cv::Mat pointcloud;
+  cv::triangulatePoints(K0*Tc0_imu, K1*Tc1_imu, input_pts0_undist, input_pts1_undist, pointcloud);
+
+  fp << "raw point cloud is " << std::endl << pointcloud << std::endl;
+
+  std::vector<cv::Vec4f> points3d_pre_imu_frame;
+  points3d_pre_imu_frame.resize(input_pts0.size());
+  //std::vector<bool> positive_depth;
+  positive_depth.resize(input_pts0.size());
+
+  double zero_rate = 0;
+
+  for(int i = 0;i<pointcloud.cols;i++) {
+    double normal_factor = pointcloud.col(i).at<float>(3);
+
+    cv::Mat_<double> p_3d_l = cv::Mat(Tc0_imu) * (pointcloud.col(i) / normal_factor);
+    cv::Mat_<double> p_3d_r = cv::Mat(Tc1_imu) * (pointcloud.col(i) / normal_factor);
+    points3d_pre_imu_frame[i] = pointcloud.col(i);
+    points3d_pre_imu_frame[i] = points3d_pre_imu_frame[i] / normal_factor; 
+
+    if (p_3d_l(2) > 0 && p_3d_r(2) > 0) {
+      positive_depth[i] = true;
+    } else {
+      positive_depth[i] = false;
+      zero_rate += 1.0;
+    }
+  }
+
+  fp << "after triangulation: " << std::endl;
+  for(int i = 0;i<input_pts0.size();i++) {
+    fp << "f" << i << " " << points3d_pre_imu_frame[i](0) << " " << 
+                                    points3d_pre_imu_frame[i](1) << " " <<
+                                    points3d_pre_imu_frame[i](2) << " " <<
+                                    positive_depth[i] << std::endl;
+    fp << "------" << std::endl;
+  }
+
+  std::cout << zero_rate/input_pts0.size() << " ";
+
+  // 2. calculate imu prediction pose of current frame, respect to last imu pose
+
+  Eigen::Matrix3d Rcp = R_p_c.transpose();
+  Eigen::Vector3d tcp = - Rcp * t_p_c;
+
+  cv::Matx44f Tcp(Rcp(0,0), Rcp(0,1), Rcp(0,2), tcp(0),
+                  Rcp(1,0), Rcp(1,1), Rcp(1,2), tcp(1),
+                  Rcp(2,0), Rcp(2,1), Rcp(2,2), tcp(2),
+                  0, 0, 0 ,1);
+
+  cv::Matx34f Tc0cur_ipre = Tc0_imu * Tcp;
+  cv::Matx34f Tc1cur_ipre = Tc1_imu * Tcp;
+
+  fp << "prediction cam0 pose is " << Tc0cur_ipre << std::endl;
+  fp << "prediction cam1 pose is " << Tc1cur_ipre << std::endl;
+
+  // 3. project all features to the current frame
+
+  std::vector<cv::Point3f> points3d_curcam0;
+  points3d_curcam0.resize(input_pts0.size());
+
+  for(int i = 0;i<points3d_pre_imu_frame.size();i++) {
+    points3d_curcam0[i] = Tc0cur_ipre * points3d_pre_imu_frame[i];
+    //cv::Point3f uv_homo = K0 * pc;
+    //predic_pts0_undist[i].x = uv_homo.x/uv_homo.z;
+    //predic_pts0_undist[i].y = uv_homo.y/uv_homo.z;
+  }
+
+  fp << std::endl;
+
+  cv::projectPoints(points3d_curcam0, cv::Vec3f(0,0,0), cv::Vec3f(0,0,0), K0, cam0_distortion_coeffs, compensated_pts0);
+
+}
+
 void ImageProcessor::trackFeatures() {
   // Size of each grid.
   static int grid_height =
@@ -428,6 +607,10 @@ void ImageProcessor::trackFeatures() {
   Matx33f cam0_R_p_c;
   Matx33f cam1_R_p_c;
   integrateImuData(cam0_R_p_c, cam1_R_p_c);
+
+  Eigen::Matrix3d Rpc;
+  Eigen::Vector3d tpc;
+  integrateImuData(Rpc, tpc);
 
   // Organize the features in the previous image.
   vector<FeatureIDType> prev_ids(0);
@@ -455,8 +638,30 @@ void ImageProcessor::trackFeatures() {
   vector<Point2f> curr_cam0_points(0);
   vector<unsigned char> track_inliers(0);
 
+  vector<Point2f> curr_cam0_points_improved(0);
+
   predictFeatureTracking(prev_cam0_points,
       cam0_R_p_c, cam0_intrinsics, curr_cam0_points);
+  auto cur_points_buf = curr_cam0_points;
+  fp << "original predict points :" << std::endl;
+  for(int i = 0;i< prev_cam0_points.size();i++) {
+    fp << " | " << curr_cam0_points[i].x << " " << curr_cam0_points[i].y;
+  }
+  fp <<std::endl;
+
+
+  std::vector<bool> positive_depth;
+  predictFeatureTracking(prev_cam0_points,prev_cam1_points,Rpc,tpc,cam0_intrinsics,cam1_intrinsics, curr_cam0_points_improved,positive_depth);
+  fp << "my predict points :" << std::endl;
+  for(int i = 0;i< prev_cam0_points.size();i++) {
+    if(!positive_depth[i]) {
+      curr_cam0_points_improved[i] = curr_cam0_points[i];
+    }
+    fp << " | " << curr_cam0_points_improved[i].x << " " << curr_cam0_points_improved[i].y;
+  }
+  fp <<std::endl;
+
+  //curr_cam0_points = curr_cam0_points_improved;
 
   calcOpticalFlowPyrLK(
       prev_cam0_pyramid_, curr_cam0_pyramid_,
@@ -468,6 +673,21 @@ void ImageProcessor::trackFeatures() {
         processor_config.max_iteration,
         processor_config.track_precision),
       cv::OPTFLOW_USE_INITIAL_FLOW);
+
+  double diff_ori = 0;
+
+  for(int i = 0;i< prev_cam0_points.size();i++) {
+    diff_ori += (std::fabs(cur_points_buf[i].x - curr_cam0_points[i].x) + std::fabs(cur_points_buf[i].y - curr_cam0_points[i].y));
+  }
+  fp << "original prediction error avrg is " << diff_ori/cur_points_buf.size() << std::endl;
+
+  double diff_imp = 0;
+  for(int i = 0;i< prev_cam0_points.size();i++) {
+    diff_imp += (std::fabs(curr_cam0_points_improved[i].x - curr_cam0_points[i].x) + std::fabs(curr_cam0_points_improved[i].y - curr_cam0_points[i].y));
+  }
+  fp << "improved prediction error avrg is " << diff_imp/cur_points_buf.size() << std::endl;
+
+  std::cout << " " << diff_imp/diff_ori << std::endl;
 
   // Mark those tracked points out of the image region
   // as untracked.
@@ -591,13 +811,14 @@ void ImageProcessor::trackFeatures() {
   int curr_feature_num = 0;
   for (const auto& item : *curr_features_ptr)
     curr_feature_num += item.second.size();
-
+/*
   ROS_INFO_THROTTLE(0.5,
       "\033[0;32m candidates: %d; track: %d; match: %d; ransac: %d/%d=%f\033[0m",
       before_tracking, after_tracking, after_matching,
       curr_feature_num, prev_feature_num,
       static_cast<double>(curr_feature_num)/
       (static_cast<double>(prev_feature_num)+1e-5));
+      */
   //printf(
   //    "\033[0;32m candidates: %d; raw track: %d; stereo match: %d; ransac: %d/%d=%f\033[0m\n",
   //    before_tracking, after_tracking, after_matching,
@@ -703,6 +924,8 @@ void ImageProcessor::addNewFeatures() {
 
   // Create a mask to avoid redetecting existing features.
   Mat mask(curr_img.rows, curr_img.cols, CV_8U, Scalar(1));
+
+  //mask(Range(0, 280), Range(0, 1279)) = 0;
 
   for (const auto& features : *curr_features_ptr) {
     for (const auto& feature : features.second) {
@@ -961,6 +1184,57 @@ void ImageProcessor::integrateImuData(
 
   // Delete the useless and used imu messages.
   imu_msg_buffer.erase(imu_msg_buffer.begin(), end_iter);
+  return;
+}
+
+void ImageProcessor::integrateImuData(Eigen::Matrix3d& R_p_c,
+    Eigen::Vector3d& t_p_c) {
+  // Find the start and the end limit within the imu msg buffer.
+  auto begin_iter = imu_msg_buffer2.begin();
+  while (begin_iter != imu_msg_buffer2.end()) {
+    if ((begin_iter->header.stamp-
+          cam0_prev_img_ptr->header.stamp).toSec() < -0.01)
+      ++begin_iter;
+    else
+      break;
+  }
+
+  auto end_iter = begin_iter;
+  while (end_iter != imu_msg_buffer2.end()) {
+    if ((end_iter->header.stamp-
+          cam0_curr_img_ptr->header.stamp).toSec() < 0.005)
+      ++end_iter;
+    else
+      break;
+  }      
+
+  Eigen::Vector3d pos, vel;
+  Eigen::Quaterniond rot;
+  pos.setZero();
+  vel = Eigen::Vector3d(last_vel.norm(),0,0);
+  rot.setIdentity();
+  double T = 0.01;
+
+  std::cout << last_vel.norm() << " ";
+
+  //strapdown 
+
+  for (auto iter = begin_iter; iter < end_iter; ++iter) {
+    Eigen::Vector3d acc(iter->linear_acceleration.x, 0, 0);
+    //Eigen::Vector3d gyro(iter->angular_velocity.x, iter->angular_velocity.y, iter->angular_velocity.z);
+    Eigen::Quaterniond dq(1, 0.5*iter->angular_velocity.x*T, 0.5*iter->angular_velocity.y*T, 0.5*iter->angular_velocity.z*T);
+
+    pos = pos + T * (rot * vel);// + 0.5 * (rot * acc) * T * T;
+    //vel = vel + T * (rot * acc);
+    rot = rot * dq;
+    rot.normalize();
+  }  
+
+  R_p_c = rot;
+  t_p_c = pos;
+
+    // Delete the useless and used imu messages.
+  imu_msg_buffer2.erase(imu_msg_buffer2.begin(), end_iter);
   return;
 }
 

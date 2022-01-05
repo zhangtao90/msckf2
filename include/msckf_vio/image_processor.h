@@ -14,6 +14,10 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/video.hpp>
 
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+#include <nav_msgs/Odometry.h>
+
 #include <ros/ros.h>
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.h>
@@ -44,6 +48,8 @@ public:
 
   typedef boost::shared_ptr<ImageProcessor> Ptr;
   typedef boost::shared_ptr<const ImageProcessor> ConstPtr;
+
+  std::ofstream fp;
 
 private:
 
@@ -81,7 +87,7 @@ private:
     int lifetime;
     cv::Point2f cam0_point;
     cv::Point2f cam1_point;
-  };
+  };      
 
   /*
    * @brief GridFeatures Organize features based on the grid
@@ -220,6 +226,8 @@ private:
   void integrateImuData(cv::Matx33f& cam0_R_p_c,
       cv::Matx33f& cam1_R_p_c);
 
+  void integrateImuData(Eigen::Matrix3d& R_p_c,
+    Eigen::Vector3d& t_p_c);
   /*
    * @brief predictFeatureTracking Compensates the rotation
    *    between consecutive camera frames so that feature
@@ -237,8 +245,17 @@ private:
       const std::vector<cv::Point2f>& input_pts,
       const cv::Matx33f& R_p_c,
       const cv::Vec4d& intrinsics,
-      std::vector<cv::Point2f>& compenstated_pts);
+      std::vector<cv::Point2f>& compensated_pts);
 
+  void predictFeatureTracking(
+    const std::vector<cv::Point2f>& input_pts0,
+    const std::vector<cv::Point2f>& input_pts1,
+    const Eigen::Matrix3d& R_p_c,
+    const Eigen::Vector3d& t_p_c,
+    const cv::Vec4d& intrinsics0,
+    const cv::Vec4d& intrinsics1,
+    std::vector<cv::Point2f>& compensated_pts0,
+    std::vector<bool>& positive_depth);
   /*
    * @brief twoPointRansac Applies two point ransac algorithm
    *    to mark the inliers in the input set.
@@ -330,6 +347,7 @@ private:
 
   // IMU message buffer.
   std::vector<sensor_msgs::Imu> imu_msg_buffer;
+  std::vector<sensor_msgs::Imu> imu_msg_buffer2;
 
   // Camera calibration parameters
   std::string cam0_distortion_model;
@@ -352,9 +370,9 @@ private:
   cv::Vec3d t_cam1_imu;
 
   // Previous and current images
-  cv_bridge::CvImageConstPtr cam0_prev_img_ptr;
-  cv_bridge::CvImageConstPtr cam0_curr_img_ptr;
-  cv_bridge::CvImageConstPtr cam1_curr_img_ptr;
+  cv_bridge::CvImagePtr cam0_prev_img_ptr;
+  cv_bridge::CvImagePtr cam0_curr_img_ptr;
+  cv_bridge::CvImagePtr cam1_curr_img_ptr;
 
   // Pyramids for previous and current image
   std::vector<cv::Mat> prev_cam0_pyramid_;
@@ -386,10 +404,15 @@ private:
   ros::Publisher tracking_info_pub;
   image_transport::Publisher debug_stereo_pub;
 
+  ros::Subscriber last_pose;
+
   // Debugging
   std::map<FeatureIDType, int> feature_lifetime;
   void updateFeatureLifetime();
   void featureLifetimeStatistics();
+
+  void OdometryCallback(const nav_msgs::OdometryConstPtr& msg);
+  Eigen::Vector3d last_vel;
 };
 
 typedef ImageProcessor::Ptr ImageProcessorPtr;

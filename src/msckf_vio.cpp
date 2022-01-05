@@ -29,6 +29,8 @@
 #include <msckf_vio/math_utils.hpp>
 #include <msckf_vio/utils.h>
 
+#include <set>
+
 using namespace std;
 using namespace Eigen;
 
@@ -58,7 +60,7 @@ MsckfVio::MsckfVio(ros::NodeHandle& pnh):
   init_time(0.0),
   init_proc(true),
   nh(pnh) {
-    fp.open("/home/zhangtao/msckf_log.txt",std::fstream::out);
+    fp.open("/home/zhangtao/dbglog/msckf/msckf_vio_log.txt",std::fstream::out);
     if(fp.fail())
     {
       std::cout << "log file open fail" << std::endl;
@@ -79,6 +81,9 @@ bool MsckfVio::loadParameters() {
   nh.param<double>("frame_rate", frame_rate, 40.0);
   nh.param<double>("position_std_threshold", position_std_threshold, 8.0);
 
+  nh.param<bool>("FRD", frd, false);
+  nh.param<bool>("strict_wait_for_imu", strict_wait_for_imu, false);
+
   nh.param<double>("rotation_threshold", rotation_threshold, 0.2618);
   nh.param<double>("translation_threshold", translation_threshold, 0.4);
   nh.param<double>("tracking_rate_threshold", tracking_rate_threshold, 0.5);
@@ -93,6 +98,9 @@ bool MsckfVio::loadParameters() {
   nh.param<double>("noise/gyro_bias", IMUState::gyro_bias_noise, 0.001);
   nh.param<double>("noise/acc_bias", IMUState::acc_bias_noise, 0.01);
   nh.param<double>("noise/feature", Feature::observation_noise, 0.01);
+
+fp << "noise set: " << IMUState::gyro_noise << " " << IMUState::acc_noise << " "
+                    << IMUState::gyro_bias_noise << " " << IMUState::acc_bias_noise << std::endl;   
 
   // Use variance instead of standard deviation.
   IMUState::gyro_noise *= IMUState::gyro_noise;
@@ -116,13 +124,15 @@ bool MsckfVio::loadParameters() {
   // The initial covariance of orientation and position can be
   // set to 0. But for velocity, bias and extrinsic parameters,
   // there should be nontrivial uncertainty.
-  double gyro_bias_cov, acc_bias_cov, velocity_cov;
+  double gyro_bias_cov, acc_bias_cov, velocity_cov , tilt_cov;
   nh.param<double>("initial_covariance/velocity",
       velocity_cov, 0.25);
   nh.param<double>("initial_covariance/gyro_bias",
       gyro_bias_cov, 1e-4);
   nh.param<double>("initial_covariance/acc_bias",
       acc_bias_cov, 1e-2);
+  nh.param<double>("initial_covariance/tilt",
+      tilt_cov, 1e-4);
 
   double extrinsic_rotation_cov, extrinsic_translation_cov;
   nh.param<double>("initial_covariance/extrinsic_rotation_cov",
@@ -131,6 +141,8 @@ bool MsckfVio::loadParameters() {
       extrinsic_translation_cov, 1e-4);
 
   state_server.state_cov = MatrixXd::Zero(21, 21);
+  for (int i = 0; i < 2; ++i)
+    state_server.state_cov(i, i) = tilt_cov;
   for (int i = 3; i < 6; ++i)
     state_server.state_cov(i, i) = gyro_bias_cov;
   for (int i = 6; i < 9; ++i)
@@ -231,7 +243,9 @@ bool MsckfVio::initialize() {
   for (int i = 1; i < 100; ++i) {
     boost::math::chi_squared chi_squared_dist(i);
     chi_squared_test_table[i] =
-      boost::math::quantile(chi_squared_dist, 0.05);
+      boost::math::quantile(chi_squared_dist, 0.66);
+
+    fp << "chi-square table dof " << i << " tbl " << chi_squared_test_table[i] << std::endl;
   }
 
   if (!createRosIO()) return false;
@@ -261,6 +275,14 @@ void MsckfVio::imuCallback(
                                                    msg->angular_velocity.y << " " <<
                                                    msg->angular_velocity.z << std::endl;
                                                    */
+
+  fp << std::fixed << std::setprecision(16) << "imu msg callback : " << msg->header.stamp.toSec() << " " << 
+                                                                        msg->linear_acceleration.x << " " <<
+                                                                        msg->linear_acceleration.y << " " <<
+                                                                        msg->linear_acceleration.z << " " <<
+                                                                        msg->angular_velocity.x << " " <<
+                                                                        msg->angular_velocity.y << " " <<
+                                                                        msg->angular_velocity.z << std::endl;
   imu_msg_buffer.push_back(*msg);
 
   if (!is_gravity_set) {
@@ -303,7 +325,11 @@ void MsckfVio::initializeGravityAndBias() {
   // Initialize the initial orientation, so that the estimation
   // is consistent with the inertial frame.
   double gravity_norm = gravity_imu.norm();
-  IMUState::gravity = Vector3d(0.0, 0.0, -gravity_norm);
+  if(frd) {
+      IMUState::gravity = Vector3d(0.0, 0.0, gravity_norm);
+  } else {
+      IMUState::gravity = Vector3d(0.0, 0.0, -gravity_norm);
+  }
 
   Quaterniond q0_i_w = Quaterniond::FromTwoVectors(
     gravity_imu, -IMUState::gravity);
@@ -393,18 +419,57 @@ bool MsckfVio::resetCallback(
 void MsckfVio::featureCallback(
     const CameraMeasurementConstPtr& msg) {
 
-      static int feature_callback_cntr = 0;
-      feature_callback_cntr++;
+feature_time = msg->header.stamp.toSec();
+
+    while(feature_time >= imu_msg_buffer.back().header.stamp.toSec()) {
+        ros::spinOnce();
+    }
+
+
+  int map_cnt = featureliferec.size();
+  int match_cnt = 0;
+  int life_cnt;
+
+  double avrg_lifetime = 0;
+  int max_lifetime = 0;
+
+  set<int> si;
+
+  for(int i = 0;i<msg->features.size();++i) {
+      si.insert(msg->features[i].id);
+      if(featureliferec.find(msg->features[i].id) == featureliferec.end()) {
+          //fp << "msg feature " << msg->features[i].id << " is new , life is 1" << std::endl;
+          featureliferec[msg->features[i].id] = 1;
+      } else {
+          match_cnt ++;
+          featureliferec[msg->features[i].id] += 1;
+          //fp << "msg feature " << msg->features[i].id << "exists life to " << featureliferec[msg->features[i].id] << std::endl;
+      }
+  }
+
+  life_cnt = featureliferec.size();
+
+  for(auto it = featureliferec.begin(); it != featureliferec.end();) {
+    avrg_lifetime += double(it->second);
+    max_lifetime = (max_lifetime > it->second) ? max_lifetime : it->second;    
+    //fp << "check feature " << it->first << " : ";
+      if(si.find(it->first) == si.end()) {
+          //fp << "not exist , remove" << std::endl;
+          it = featureliferec.erase(it);
+      } else {
+          ++it;
+          //fp << "exist no action" << std::endl;
+      }
+  }
+
+  avrg_lifetime/=double(life_cnt);
+
+  fp << endl << std::fixed<< std::setprecision(16) << "featureCallback : " << msg->header.stamp.toSec() << " " << map_cnt << " " << match_cnt << " " << avrg_lifetime << " " << max_lifetime << std::endl;
+
+
 
   // Return if the gravity vector has not been set.
   if (!is_gravity_set) return;
-
-  fp << endl << std::fixed<< std::setprecision(16) << "featureCallback : " << feature_callback_cntr << " " << msg->header.stamp.toSec()<< " ";
-  for(int i = 0;i < msg->features.size();i++)
-  {
-    fp << msg->features[i].id << " ";
-  }
-  fp << std::endl;
 
   // Start the system if the first image is received.
   // The frame where the first image is received will be
@@ -653,6 +718,10 @@ void MsckfVio::processModel(const double& time,
   // Propogate the state covariance matrix.
   Matrix<double, 21, 21> Q = Phi*G*state_server.continuous_noise_cov*
     G.transpose()*Phi.transpose()*dtime;
+    fp << "set Q " << std::endl << state_server.continuous_noise_cov << std::endl;
+    fp << "print G :"<< std::endl << G << std::endl;
+    fp << "print phi :"<< std::endl << Phi << std::endl;
+    fp << "print Q :"<< std::endl << Q << std::endl;
   state_server.state_cov.block<21, 21>(0, 0) =
     Phi*state_server.state_cov.block<21, 21>(0, 0)*Phi.transpose() + Q;
 
@@ -1039,7 +1108,7 @@ void MsckfVio::measurementUpdate(
 
   // Update the IMU state.
   const VectorXd& delta_x_imu = delta_x.head<21>();
-
+    fp << std::fixed << std::setprecision(16) << "delta position,orientation: " << feature_time << " " << delta_x_imu.segment<3>(12).transpose() << " " << delta_x_imu.segment<3>(0).transpose() << std::endl;
   if (//delta_x_imu.segment<3>(0).norm() > 0.15 ||
       //delta_x_imu.segment<3>(3).norm() > 0.15 ||
       delta_x_imu.segment<3>(6).norm() > 0.5 ||
@@ -1048,7 +1117,6 @@ void MsckfVio::measurementUpdate(
     printf("delta velocity: %f\n", delta_x_imu.segment<3>(6).norm());
     printf("delta position: %f\n", delta_x_imu.segment<3>(12).norm());
     ROS_WARN("Update change is too large.");
-    //return;
   }
 
   const Vector4d dq_imu =
@@ -1101,6 +1169,7 @@ bool MsckfVio::gatingTest(
 
   //cout << dof << " " << gamma << " " <<
   //  chi_squared_test_table[dof] << " ";
+  fp << "gamma and chi tbl is " << gamma << " " << chi_squared_test_table[dof] << std::endl;
 
   if (gamma < chi_squared_test_table[dof]) {
     //cout << "passed" << endl;
@@ -1186,11 +1255,16 @@ void MsckfVio::removeLostFeatures() {
   VectorXd r = VectorXd::Zero(jacobian_row_size);
   int stack_cntr = 0;
 
+  int fea_cnt = 0;
+  int gpass_cnt = 0;
+
   fp << "construct jacob: ";
 
   // Process the features which lose track.
   for (const auto& feature_id : processed_feature_ids) {
     auto& feature = map_server[feature_id];
+
+    fea_cnt ++;
 
     vector<StateIDType> cam_state_ids(0);
     for (const auto& measurement : feature.observations)
@@ -1205,6 +1279,7 @@ void MsckfVio::removeLostFeatures() {
       r.segment(stack_cntr, r_j.rows()) = r_j;
       stack_cntr += H_xj.rows();
       fp << feature.id << "@" << feature.observations.size()<< " ";
+      gpass_cnt++;
     }
 
     // Put an upper bound on the row size of measurement Jacobian,
@@ -1212,6 +1287,8 @@ void MsckfVio::removeLostFeatures() {
     if (stack_cntr > 1500) break;
   }
   fp << endl;
+
+  fp << std::fixed << std::setprecision(16) << "remove lost features gating test pass rate: " << feature_time << " " << gpass_cnt << " " << fea_cnt << std::endl;
 
   H_x.conservativeResize(stack_cntr, H_x.cols());
   r.conservativeResize(stack_cntr);
@@ -1387,10 +1464,15 @@ void MsckfVio::pruneCamStateBuffer() {
   VectorXd r = VectorXd::Zero(jacobian_row_size);
   int stack_cntr = 0;
 
+  int fea_cnt = 0;
+  int gpass_cnt = 0;
+
   fp << "construct jacobs: ";
 
   for (auto& item : map_server) {
     auto& feature = item.second;
+
+        
     // Check how many camera states to be removed are associated
     // with this feature.
     vector<StateIDType> involved_cam_state_ids(0);
@@ -1405,6 +1487,8 @@ void MsckfVio::pruneCamStateBuffer() {
       continue;
     }
 
+    fea_cnt ++;
+
     MatrixXd H_xj;
     VectorXd r_j;
     featureJacobian(feature.id, involved_cam_state_ids, H_xj, r_j);
@@ -1414,6 +1498,7 @@ void MsckfVio::pruneCamStateBuffer() {
       H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
       r.segment(stack_cntr, r_j.rows()) = r_j;
       stack_cntr += H_xj.rows();
+      gpass_cnt++;
     }
 
     for (const auto& cam_id : involved_cam_state_ids)
@@ -1421,6 +1506,8 @@ void MsckfVio::pruneCamStateBuffer() {
   }
 
   fp << endl;
+
+  fp << std::fixed << std::setprecision(16) << "prune cam states gating test pass rate: " << feature_time << " " << gpass_cnt << " " << fea_cnt << std::endl;
 
   H_x.conservativeResize(stack_cntr, H_x.cols());
   r.conservativeResize(stack_cntr);
@@ -1547,7 +1634,51 @@ void MsckfVio::onlineReset() {
   return;
 }
 
+Vector3d quat2rpy(Quaterniond q)
+{
+    Vector3d ret;
+    ret.setZero();
+
+    q.normalize();
+    ret(0) = atan2(2.0 * (q.w() * q.x() + q.y() * q.z()), 1.0 - 2.0 * (q.x() * q.x() + q.y() * q.y()));
+    ret(1) = asin(2.0 * (q.w() * q.y() - q.z() * q.x()));
+    ret(2) = atan2(2.0 * (q.w() * q.z() + q.x() * q.y()), 1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
+
+    return ret;
+}
+
+Quaterniond rpy2quat(const Vector3d& rpy)
+{
+    Quaterniond quat_yaw(AngleAxisd(rpy[2], Vector3d(0, 0, 1)));
+    Quaterniond quat_pitch(AngleAxisd(rpy[1], Vector3d(0, 1, 0)));
+    Quaterniond quat_roll(AngleAxisd(rpy[0], Vector3d(1, 0, 0)));
+
+    return quat_yaw * quat_pitch * quat_roll;
+}
+
 void MsckfVio::publish(const ros::Time& time) {
+
+    Eigen::Quaterniond quat(state_server.imu_state.orientation(3), 
+                            state_server.imu_state.orientation(0),
+                            state_server.imu_state.orientation(1),
+                            state_server.imu_state.orientation(2));
+    
+    Eigen::Vector3d euler = quat2rpy(quat);
+
+    fp << std::fixed << std::setprecision(16) << "pose estimation : " << time.toSec() << " " <<
+                                                                        state_server.imu_state.position.transpose() << " " <<
+                                                                        state_server.imu_state.velocity.transpose() << " " << 
+                                                                        euler.transpose() << " " <<
+                                                                        state_server.imu_state.acc_bias.transpose() << " " <<
+                                                                        state_server.imu_state.gyro_bias.transpose() << std::endl;
+    /*                                                                    
+    fp << std::fixed << std::setprecision(16) << "cov estimation : " << time.toSec() << " " <<
+                                                                        state_server.state_cov.block<21, 21>(0, 0).diagonal().transpose() << std::endl;   
+                                                                        */                       
+    Eigen::Matrix<double,Dynamic,Dynamic,ColMajor> M2(state_server.state_cov.block<21, 21>(0, 0));
+    Map<RowVectorXd> v2(M2.data(), M2.size());    
+
+    fp << std::fixed << std::setprecision(16) << "cov estimation : " << time.toSec() << " " << v2 << std::endl;                         
 
   // Convert the IMU frame to the body frame.
   const IMUState& imu_state = state_server.imu_state;
@@ -1629,6 +1760,7 @@ void MsckfVio::publish(const ros::Time& time) {
 }
 
 void MsckfVio::takeSnapShot() {
+    return;
   fp << "<<<<<<<<<<<< Snap Shot ! >>>>>>>>>>>>>" << endl;
   fp << "f:[" << "\t";
   for(auto it = map_server.begin();it != map_server.end();++it) {

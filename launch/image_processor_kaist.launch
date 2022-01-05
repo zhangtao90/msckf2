@@ -1,6 +1,6 @@
 <launch>
 
-  <arg name="robot" default="firefly_sbx"/>
+  <arg name="robot" default="kaist"/>
   <arg name="calibration_file"
     default="$(find msckf_vio)/config/camchain-imucam-kaist.yaml"/>
 
@@ -11,12 +11,12 @@
       output="screen">
 
       <rosparam command="load" file="$(arg calibration_file)"/>
-      <param name="grid_row" value="5"/>
-      <param name="grid_col" value="6"/>
-      <param name="grid_min_feature_num" value="3"/>
-      <param name="grid_max_feature_num" value="6"/>
+      <param name="grid_row" value="7"/>
+      <param name="grid_col" value="16"/>
+      <param name="grid_min_feature_num" value="2"/>
+      <param name="grid_max_feature_num" value="3"/>
       <param name="pyramid_levels" value="3"/>
-      <param name="patch_size" value="15"/>
+      <param name="patch_size" value="20"/>
       <param name="fast_threshold" value="10"/>
       <param name="max_iteration" value="30"/>
       <param name="track_precision" value="0.01"/>
@@ -24,8 +24,8 @@
       <param name="stereo_threshold" value="5"/>
 
       <remap from="~imu" to="/imu/data_raw"/>
-      <remap from="~cam0_image" to="/stereo/left/image_mono"/>
-      <remap from="~cam1_image" to="/stereo/right/image_mono"/>
+      <remap from="~cam0_image" to="/stereo/left/image_raw"/>
+      <remap from="~cam1_image" to="/stereo/right/image_raw"/>
 
     </node>
   </group>
