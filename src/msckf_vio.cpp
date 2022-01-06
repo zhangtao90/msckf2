@@ -97,10 +97,7 @@ bool MsckfVio::loadParameters() {
   nh.param<double>("noise/acc", IMUState::acc_noise, 0.01);
   nh.param<double>("noise/gyro_bias", IMUState::gyro_bias_noise, 0.001);
   nh.param<double>("noise/acc_bias", IMUState::acc_bias_noise, 0.01);
-  nh.param<double>("noise/feature", Feature::observation_noise, 0.01);
-
-fp << "noise set: " << IMUState::gyro_noise << " " << IMUState::acc_noise << " "
-                    << IMUState::gyro_bias_noise << " " << IMUState::acc_bias_noise << std::endl;   
+  nh.param<double>("noise/feature", Feature::observation_noise, 0.01);  
 
   // Use variance instead of standard deviation.
   IMUState::gyro_noise *= IMUState::gyro_noise;
@@ -194,9 +191,6 @@ fp << "noise set: " << IMUState::gyro_noise << " " << IMUState::acc_noise << " "
   ROS_INFO("initial extrinsic translation cov: %f",
       extrinsic_translation_cov);
 
-  cout << T_imu_cam0.linear() << endl;
-  cout << T_imu_cam0.translation().transpose() << endl;
-
   ROS_INFO("max camera state #: %d", max_cam_state_size);
   ROS_INFO("===========================================");
   return true;
@@ -245,7 +239,7 @@ bool MsckfVio::initialize() {
     chi_squared_test_table[i] =
       boost::math::quantile(chi_squared_dist, 0.66);
 
-    fp << "chi-square table dof " << i << " tbl " << chi_squared_test_table[i] << std::endl;
+   // fp << "chi-square table dof " << i << " tbl " << chi_squared_test_table[i] << std::endl;
   }
 
   if (!createRosIO()) return false;
@@ -287,7 +281,7 @@ void MsckfVio::imuCallback(
 
   if (!is_gravity_set) {
   //fp << "!gravity not set, imu buffer len is " << imu_msg_buffer.size() << std::endl;
-    if (imu_msg_buffer.size() < 200) return;
+    if (imu_msg_buffer.size() < 400) return;
     //if (imu_msg_buffer.size() < 10) return;
     initializeGravityAndBias();
     //fp << "!gravity&bias initialized" << std::endl;
@@ -421,11 +415,6 @@ void MsckfVio::featureCallback(
 
 feature_time = msg->header.stamp.toSec();
 
-    while(feature_time >= imu_msg_buffer.back().header.stamp.toSec()) {
-        ros::spinOnce();
-    }
-
-
   int map_cnt = featureliferec.size();
   int match_cnt = 0;
   int life_cnt;
@@ -492,13 +481,14 @@ feature_time = msg->header.stamp.toSec();
   double imu_processing_time = (
       ros::Time::now()-start_time).toSec();
 
+  fp << "***** before state augmentation *****" << std::endl;
+  takeSnapShot();
+
   // Augment the state vector.
   start_time = ros::Time::now();
   stateAugmentation(msg->header.stamp.toSec());
   double state_augmentation_time = (
       ros::Time::now()-start_time).toSec();
-
-  takeSnapShot();
 
   // Add new observations for existing features or new
   // features in the map server.
@@ -507,21 +497,18 @@ feature_time = msg->header.stamp.toSec();
   double add_observations_time = (
       ros::Time::now()-start_time).toSec();
 
-  takeSnapShot();
-
   // Perform measurement update if necessary.
   start_time = ros::Time::now();
   removeLostFeatures();
   double remove_lost_features_time = (
       ros::Time::now()-start_time).toSec();
 
-  takeSnapShot();
-
   start_time = ros::Time::now();
   pruneCamStateBuffer();
   double prune_cam_states_time = (
       ros::Time::now()-start_time).toSec();
 
+    fp << "***** after prune cam state buf *****" << std::endl;
   takeSnapShot();
 
   // Publish the odometry.
@@ -626,7 +613,8 @@ void MsckfVio::mocapOdomCallback(
 void MsckfVio::batchImuProcessing(const double& time_bound) {
   // Counter how many IMU msgs in the buffer are used.
   int used_imu_msg_cntr = 0;
-  //fp << "process imu model at time " ;
+  fp << "process imu model at time " ;
+  int proc_imu_cntr = 0;
   for (const auto& imu_msg : imu_msg_buffer) {
     double imu_time = imu_msg.header.stamp.toSec();
     if (imu_time < state_server.imu_state.time) {
@@ -642,8 +630,9 @@ void MsckfVio::batchImuProcessing(const double& time_bound) {
 
     // Execute process model.
     processModel(imu_time, m_gyro, m_acc);
-   //fp << " " << imu_time - init_time;
+    fp << std::endl << imu_time;
     ++used_imu_msg_cntr;
+    ++proc_imu_cntr;
   }
 
   // Set the state ID for the new IMU state.
@@ -652,6 +641,8 @@ void MsckfVio::batchImuProcessing(const double& time_bound) {
   // Remove all used IMU msgs.
   imu_msg_buffer.erase(imu_msg_buffer.begin(),
       imu_msg_buffer.begin()+used_imu_msg_cntr);
+
+    fp << std::endl;
 
   return;
 }
@@ -718,10 +709,7 @@ void MsckfVio::processModel(const double& time,
   // Propogate the state covariance matrix.
   Matrix<double, 21, 21> Q = Phi*G*state_server.continuous_noise_cov*
     G.transpose()*Phi.transpose()*dtime;
-    fp << "set Q " << std::endl << state_server.continuous_noise_cov << std::endl;
-    fp << "print G :"<< std::endl << G << std::endl;
-    fp << "print phi :"<< std::endl << Phi << std::endl;
-    fp << "print Q :"<< std::endl << Q << std::endl;
+
   state_server.state_cov.block<21, 21>(0, 0) =
     Phi*state_server.state_cov.block<21, 21>(0, 0)*Phi.transpose() + Q;
 
@@ -839,12 +827,6 @@ void MsckfVio::stateAugmentation(const double& time) {
   cam_state.orientation_null = cam_state.orientation;
   cam_state.position_null = cam_state.position;
 
-  fp << "cam state augmented to [";
-  for(auto it = state_server.cam_states.begin();it != state_server.cam_states.end();++it) {
-    fp << it->first << " ";
-  }
-  fp << "* ]" << endl;
-
   // Update the covariance matrix of the state.
   // To simplify computation, the matrix J below is the nontrivial block
   // in Equation (16) in "A Multi-State Constraint Kalman Filter for Vision
@@ -880,12 +862,6 @@ void MsckfVio::stateAugmentation(const double& time) {
       state_server.state_cov.transpose()) / 2.0;
   state_server.state_cov = state_cov_fixed;
 
-/*  fp << "after state augmentation, states and covariance are:" << endl <<
-        state_server.imu_state.position.transpose() << " " <<
-        state_server.imu_state.velocity.transpose() << " " <<
-        state_server.imu_state.orientation.transpose() << endl;
-  fp << state_server.state_cov << endl;
-*/
   return;
 }
 
@@ -895,7 +871,6 @@ void MsckfVio::addFeatureObservations(
   StateIDType state_id = state_server.imu_state.id;
   int curr_feature_num = map_server.size();
   int tracked_feature_num = 0;
-  fp << "addFeatures" << endl;
   // Add new observations for existing features or new
   // features in the map server.
   for (const auto& feature : msg->features) {
@@ -905,14 +880,12 @@ void MsckfVio::addFeatureObservations(
       map_server[feature.id].observations[state_id] =
         Vector4d(feature.u0, feature.v0,
             feature.u1, feature.v1);
-      fp << feature.id << "* ";
     } else {
       // This is an old feature.
       map_server[feature.id].observations[state_id] =
         Vector4d(feature.u0, feature.v0,
             feature.u1, feature.v1);
       ++tracked_feature_num;
-      fp << feature.id << "* ";
     }
   }
 
@@ -1056,7 +1029,6 @@ void MsckfVio::featureJacobian(
 
 void MsckfVio::measurementUpdate(
     const MatrixXd& H, const VectorXd& r) {
-
   if (H.rows() == 0 || r.rows() == 0) return;
 
   // Decompose the final Jacobian matrix to reduce computational
@@ -1108,7 +1080,7 @@ void MsckfVio::measurementUpdate(
 
   // Update the IMU state.
   const VectorXd& delta_x_imu = delta_x.head<21>();
-    fp << std::fixed << std::setprecision(16) << "delta position,orientation: " << feature_time << " " << delta_x_imu.segment<3>(12).transpose() << " " << delta_x_imu.segment<3>(0).transpose() << std::endl;
+    fp << std::fixed << std::setprecision(16) << "dx_imu is " << feature_time << " " << delta_x_imu.transpose() << std::endl;
   if (//delta_x_imu.segment<3>(0).norm() > 0.15 ||
       //delta_x_imu.segment<3>(3).norm() > 0.15 ||
       delta_x_imu.segment<3>(6).norm() > 0.5 ||
@@ -1134,6 +1106,7 @@ void MsckfVio::measurementUpdate(
       dq_extrinsic) * state_server.imu_state.R_imu_cam0;
   state_server.imu_state.t_cam0_imu += delta_x_imu.segment<3>(18);
 
+    fp << std::fixed << std::setprecision(16) << "dx_cam is " << feature_time << std::endl;
   // Update the camera states.
   auto cam_state_iter = state_server.cam_states.begin();
   for (int i = 0; i < state_server.cam_states.size();
@@ -1143,6 +1116,7 @@ void MsckfVio::measurementUpdate(
     cam_state_iter->second.orientation = quaternionMultiplication(
         dq_cam, cam_state_iter->second.orientation);
     cam_state_iter->second.position += delta_x_cam.tail<3>();
+    fp << cam_state_iter->first << " " << delta_x_cam.transpose() << std::endl;
   }
 
   // Update state covariance.
@@ -1169,7 +1143,7 @@ bool MsckfVio::gatingTest(
 
   //cout << dof << " " << gamma << " " <<
   //  chi_squared_test_table[dof] << " ";
-  fp << "gamma and chi tbl is " << gamma << " " << chi_squared_test_table[dof] << std::endl;
+  //fp << "gamma and chi tbl is " << gamma << " " << chi_squared_test_table[dof] << std::endl;
 
   if (gamma < chi_squared_test_table[dof]) {
     //cout << "passed" << endl;
@@ -1258,8 +1232,6 @@ void MsckfVio::removeLostFeatures() {
   int fea_cnt = 0;
   int gpass_cnt = 0;
 
-  fp << "construct jacob: ";
-
   // Process the features which lose track.
   for (const auto& feature_id : processed_feature_ids) {
     auto& feature = map_server[feature_id];
@@ -1278,7 +1250,6 @@ void MsckfVio::removeLostFeatures() {
       H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
       r.segment(stack_cntr, r_j.rows()) = r_j;
       stack_cntr += H_xj.rows();
-      fp << feature.id << "@" << feature.observations.size()<< " ";
       gpass_cnt++;
     }
 
@@ -1292,7 +1263,7 @@ void MsckfVio::removeLostFeatures() {
 
   H_x.conservativeResize(stack_cntr, H_x.cols());
   r.conservativeResize(stack_cntr);
-
+/*
   bool test1 = true;
   for(int ii = 0;ii<H_x.rows() && test1;ii++) {
     for(int jj = 0;jj < 21;jj++) {
@@ -1314,7 +1285,7 @@ void MsckfVio::removeLostFeatures() {
   }
   fp << "(removing lost features) H shape is " << H_x.rows() << " features * " << H_x.cols() << " cam_states" << std::endl;
   fp << "Hx pre21 are zero is " << test1 << " latest are zero is " << test2 << endl;
-
+*/
   // Perform the measurement update step.
   measurementUpdate(H_x, r);
 
@@ -1455,7 +1426,6 @@ void MsckfVio::pruneCamStateBuffer() {
 
   fp << endl;
 
-  takeSnapShot();
   //cout << "jacobian row #: " << jacobian_row_size << endl;
 
   // Compute the Jacobian and residual.
@@ -1494,7 +1464,6 @@ void MsckfVio::pruneCamStateBuffer() {
     featureJacobian(feature.id, involved_cam_state_ids, H_xj, r_j);
 
     if (gatingTest(H_xj, r_j, involved_cam_state_ids.size())) {
-      fp << feature.id << "jac  ";
       H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
       r.segment(stack_cntr, r_j.rows()) = r_j;
       stack_cntr += H_xj.rows();
@@ -1511,7 +1480,7 @@ void MsckfVio::pruneCamStateBuffer() {
 
   H_x.conservativeResize(stack_cntr, H_x.cols());
   r.conservativeResize(stack_cntr);
-
+/*
   bool test1 = true;
   for(int ii = 0;ii<H_x.rows() && test1;ii++) {
     for(int jj = 0;jj < 21;jj++) {
@@ -1533,7 +1502,7 @@ void MsckfVio::pruneCamStateBuffer() {
   }
   fp << "(prune cam states) H shape is : " << H_x.rows() << " features * " << H_x.cols() << " cam_states" << endl;
   fp << "Hx pre21 are zero is " << test1 << " latest are zero is " << test2 << endl;
-
+*/
 
   // Perform measurement update.
   measurementUpdate(H_x, r);
@@ -1760,7 +1729,6 @@ void MsckfVio::publish(const ros::Time& time) {
 }
 
 void MsckfVio::takeSnapShot() {
-    return;
   fp << "<<<<<<<<<<<< Snap Shot ! >>>>>>>>>>>>>" << endl;
   fp << "f:[" << "\t";
   for(auto it = map_server.begin();it != map_server.end();++it) {

@@ -37,7 +37,7 @@ ImageProcessor::ImageProcessor(ros::NodeHandle& n) :
     {
       std::cout << "log file open fail" << std::endl;
     }
-    last_pose = nh.subscribe<nav_msgs::Odometry>("/kaist/vio/odom", 10, &ImageProcessor::OdometryCallback, this);
+    //last_pose = nh.subscribe<nav_msgs::Odometry>("/kaist/vio/odom", 10, &ImageProcessor::OdometryCallback, this);
   return;
 }
 
@@ -250,7 +250,7 @@ void ImageProcessor::stereoCallback(
   cv::cvtColor(cam1_curr_img_ptr->image, rgb1, CV_BayerRG2RGB);
   cv::cvtColor(rgb1, cam1_curr_img_ptr->image, CV_RGB2GRAY);
 
-  fp << "image shape is " << cam0_curr_img_ptr->image.rows << " " << cam0_curr_img_ptr->image.cols << std::endl;
+  //fp << "image shape is " << cam0_curr_img_ptr->image.rows << " " << cam0_curr_img_ptr->image.cols << std::endl;
 
   // Build the image pyramids once since they're used at multiple places
   createImagePyramids();
@@ -607,11 +607,11 @@ void ImageProcessor::trackFeatures() {
   Matx33f cam0_R_p_c;
   Matx33f cam1_R_p_c;
   integrateImuData(cam0_R_p_c, cam1_R_p_c);
-
+/*
   Eigen::Matrix3d Rpc;
   Eigen::Vector3d tpc;
   integrateImuData(Rpc, tpc);
-
+*/
   // Organize the features in the previous image.
   vector<FeatureIDType> prev_ids(0);
   vector<int> prev_lifetime(0);
@@ -643,6 +643,7 @@ void ImageProcessor::trackFeatures() {
   predictFeatureTracking(prev_cam0_points,
       cam0_R_p_c, cam0_intrinsics, curr_cam0_points);
   auto cur_points_buf = curr_cam0_points;
+  /*
   fp << "original predict points :" << std::endl;
   for(int i = 0;i< prev_cam0_points.size();i++) {
     fp << " | " << curr_cam0_points[i].x << " " << curr_cam0_points[i].y;
@@ -662,7 +663,7 @@ void ImageProcessor::trackFeatures() {
   fp <<std::endl;
 
   //curr_cam0_points = curr_cam0_points_improved;
-
+*/
   calcOpticalFlowPyrLK(
       prev_cam0_pyramid_, curr_cam0_pyramid_,
       prev_cam0_points, curr_cam0_points,
@@ -673,7 +674,7 @@ void ImageProcessor::trackFeatures() {
         processor_config.max_iteration,
         processor_config.track_precision),
       cv::OPTFLOW_USE_INITIAL_FLOW);
-
+/*
   double diff_ori = 0;
 
   for(int i = 0;i< prev_cam0_points.size();i++) {
@@ -688,7 +689,7 @@ void ImageProcessor::trackFeatures() {
   fp << "improved prediction error avrg is " << diff_imp/cur_points_buf.size() << std::endl;
 
   std::cout << " " << diff_imp/diff_ori << std::endl;
-
+*/
   // Mark those tracked points out of the image region
   // as untracked.
   for (int i = 0; i < curr_cam0_points.size(); ++i) {
@@ -1533,6 +1534,7 @@ void ImageProcessor::publish() {
       curr_cam1_points, cam1_intrinsics, cam1_distortion_model,
       cam1_distortion_coeffs, curr_cam1_points_undistorted);
 
+  fp << std::fixed << std::setprecision(16) << "feature publish: " << feature_msg_ptr->header.stamp.toSec();
   for (int i = 0; i < curr_ids.size(); ++i) {
     feature_msg_ptr->features.push_back(FeatureMeasurement());
     feature_msg_ptr->features[i].id = curr_ids[i];
@@ -1540,7 +1542,9 @@ void ImageProcessor::publish() {
     feature_msg_ptr->features[i].v0 = curr_cam0_points_undistorted[i].y;
     feature_msg_ptr->features[i].u1 = curr_cam1_points_undistorted[i].x;
     feature_msg_ptr->features[i].v1 = curr_cam1_points_undistorted[i].y;
+    fp << " " << curr_ids[i];
   }
+  fp << std::endl;
 
   feature_pub.publish(feature_msg_ptr);
 
