@@ -1218,8 +1218,16 @@ void MsckfVio::removeLostFeatures() {
   //cout << "jacobian row #: " << jacobian_row_size << endl;
 
   // Remove the features that do not have enough measurements.
-  for (const auto& feature_id : invalid_feature_ids)
+  for (const auto& feature_id : invalid_feature_ids) {
+     map_server.erase(feature_id); 
     map_server.erase(feature_id);
+     map_server.erase(feature_id); 
+     auto it = wrong_feature_id.find(feature_id);
+     if(it != wrong_feature_id.end()) {
+         wrong_feature_id.erase(it);
+     }
+  }
+    
 
   // Return if there is no lost feature to be processed.
   if (processed_feature_ids.size() == 0) return;
@@ -1245,13 +1253,17 @@ void MsckfVio::removeLostFeatures() {
     MatrixXd H_xj;
     VectorXd r_j;
     featureJacobian(feature.id, cam_state_ids, H_xj, r_j);
-
-    if (gatingTest(H_xj, r_j, cam_state_ids.size()-1)) {
-      H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
-      r.segment(stack_cntr, r_j.rows()) = r_j;
-      stack_cntr += H_xj.rows();
-      gpass_cnt++;
+    if(wrong_feature_id.find(feature.id) == wrong_feature_id.end()) {
+        if (gatingTest(H_xj, r_j, cam_state_ids.size()-1)) {
+        H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
+        r.segment(stack_cntr, r_j.rows()) = r_j;
+        stack_cntr += H_xj.rows();
+        gpass_cnt++;
+        } else {
+            wrong_feature_id.insert(feature.id);
+        }   
     }
+
 
     // Put an upper bound on the row size of measurement Jacobian,
     // which helps guarantee the executation time.
@@ -1290,8 +1302,13 @@ void MsckfVio::removeLostFeatures() {
   measurementUpdate(H_x, r);
 
   // Remove all processed features from the map.
-  for (const auto& feature_id : processed_feature_ids)
+  for (const auto& feature_id : processed_feature_ids) {
     map_server.erase(feature_id);
+     auto it = wrong_feature_id.find(feature_id);
+     if(it != wrong_feature_id.end()) {
+         wrong_feature_id.erase(it);
+     }
+  }
 
 
 
@@ -1462,12 +1479,15 @@ void MsckfVio::pruneCamStateBuffer() {
     MatrixXd H_xj;
     VectorXd r_j;
     featureJacobian(feature.id, involved_cam_state_ids, H_xj, r_j);
-
-    if (gatingTest(H_xj, r_j, involved_cam_state_ids.size())) {
-      H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
-      r.segment(stack_cntr, r_j.rows()) = r_j;
-      stack_cntr += H_xj.rows();
-      gpass_cnt++;
+    if(wrong_feature_id.find(feature.id) == wrong_feature_id.end()) {
+        if (gatingTest(H_xj, r_j, involved_cam_state_ids.size())) {
+        H_x.block(stack_cntr, 0, H_xj.rows(), H_xj.cols()) = H_xj;
+        r.segment(stack_cntr, r_j.rows()) = r_j;
+        stack_cntr += H_xj.rows();
+        gpass_cnt++;
+        } else {
+            wrong_feature_id.insert(feature.id);
+        }   
     }
 
     for (const auto& cam_id : involved_cam_state_ids)

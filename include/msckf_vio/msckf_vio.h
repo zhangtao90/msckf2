@@ -184,6 +184,7 @@ class MsckfVio {
     MapServer map_server;
 
     std::map<int, int> featureliferec;
+    std::set<int> wrong_feature_id;
 
     // IMU data buffer
     // This is buffer is used to handle the unsynchronization or

@@ -1094,6 +1094,12 @@ void ImageProcessor::undistortPoints(
       0.0, new_intrinsics[1], new_intrinsics[3],
       0.0, 0.0, 1.0);
 
+    fp<< "distortion_coeffs : " << distortion_coeffs[0] << " " <<
+                                   distortion_coeffs[1] << " " <<
+                                   distortion_coeffs[2] << " " <<
+                                   distortion_coeffs[3] << " " <<
+                                   distortion_coeffs[4];
+
   if (distortion_model == "radtan") {
     cv::undistortPoints(pts_in, pts_out, K, distortion_coeffs,
                         rectification_matrix, K_new);
