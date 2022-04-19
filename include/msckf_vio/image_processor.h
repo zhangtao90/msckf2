@@ -160,6 +160,20 @@ private:
   void imuCallback(const sensor_msgs::ImuConstPtr& msg);
 
   /*
+   * @brief accCallback
+   *    Callback function for the t265 accelerometer message.
+   * @param msg IMU msg.
+   */
+  void accCallback(const sensor_msgs::ImuConstPtr& msg);
+
+  /*
+   * @brief gyrCallback
+   *    Callback function for the t265 gyroscope message.
+   * @param msg IMU msg.
+   */
+  void gyrCallback(const sensor_msgs::ImuConstPtr& msg);
+
+  /*
    * @initializeFirstFrame
    *    Initialize the image processing sequence, which is
    *    bascially detect new features on the first set of
@@ -400,6 +414,8 @@ private:
   message_filters::TimeSynchronizer<
     sensor_msgs::Image, sensor_msgs::Image> stereo_sub;
   ros::Subscriber imu_sub;
+  ros::Subscriber acc_sub;
+  ros::Subscriber gyr_sub;
   ros::Publisher feature_pub;
   ros::Publisher tracking_info_pub;
   image_transport::Publisher debug_stereo_pub;
@@ -413,6 +429,9 @@ private:
 
   void OdometryCallback(const nav_msgs::OdometryConstPtr& msg);
   Eigen::Vector3d last_vel;
+
+  Eigen::Vector3d acc_buf;
+  bool is_acc_valid;
 };
 
 typedef ImageProcessor::Ptr ImageProcessorPtr;

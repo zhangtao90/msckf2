@@ -59,7 +59,8 @@ MsckfVio::MsckfVio(ros::NodeHandle& pnh):
   is_first_img(true),
   init_time(0.0),
   init_proc(true),
-  nh(pnh) {
+  nh(pnh),
+  is_acc_valid(false) {
     fp.open("/home/zhangtao/dbglog/msckf/msckf_vio_log.txt",std::fstream::out);
     if(fp.fail())
     {
@@ -206,6 +207,10 @@ bool MsckfVio::createRosIO() {
 
   imu_sub = nh.subscribe("imu", 100,
       &MsckfVio::imuCallback, this);
+  acc_sub = nh.subscribe("acc", 50,
+      &MsckfVio::accCallback, this);
+  gyr_sub = nh.subscribe("gyr", 50,
+      &MsckfVio::gyrCallback, this);
   feature_sub = nh.subscribe("features", 40,
       &MsckfVio::featureCallback, this);
 
@@ -291,6 +296,41 @@ void MsckfVio::imuCallback(
   return;
 }
 
+void MsckfVio::accCallback(const sensor_msgs::ImuConstPtr& msg) {
+  acc_buf = Eigen::Vector3d(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+  is_acc_valid = true;
+  return;    
+}
+
+void MsckfVio::gyrCallback(const sensor_msgs::ImuConstPtr& msg) {
+
+    auto newimumsg = *msg;
+    newimumsg.linear_acceleration.x = acc_buf.x();
+    newimumsg.linear_acceleration.y = acc_buf.y();
+    newimumsg.linear_acceleration.z = acc_buf.z();
+
+    imu_msg_buffer.push_back(newimumsg);
+
+    fp << std::fixed << std::setprecision(16) << "t265gyro msg callback : " << newimumsg.header.stamp.toSec() << " " << 
+                                                                                newimumsg.linear_acceleration.x << " " <<
+                                                                                newimumsg.linear_acceleration.y << " " <<
+                                                                                newimumsg.linear_acceleration.z << " " <<
+                                                                                newimumsg.angular_velocity.x << " " <<
+                                                                                newimumsg.angular_velocity.y << " " <<
+                                                                                newimumsg.angular_velocity.z << std::endl;
+
+  if (!is_gravity_set) {
+  //fp << "!gravity not set, imu buffer len is " << imu_msg_buffer.size() << std::endl;
+    if (imu_msg_buffer.size() < 400) return;
+    //if (imu_msg_buffer.size() < 10) return;
+    initializeGravityAndBias();
+    //fp << "!gravity&bias initialized" << std::endl;
+    is_gravity_set = true;
+  }
+
+  return;
+}
+
 void MsckfVio::initializeGravityAndBias() {
 
   // Initialize gravity and gyro bias.
@@ -345,6 +385,8 @@ bool MsckfVio::resetCallback(
   // state from updating.
   feature_sub.shutdown();
   imu_sub.shutdown();
+  acc_sub.shutdown();
+  gyr_sub.shutdown();
 
   // Reset the IMU state.
   IMUState& imu_state = state_server.imu_state;
@@ -401,6 +443,10 @@ bool MsckfVio::resetCallback(
   // Restart the subscribers.
   imu_sub = nh.subscribe("imu", 100,
       &MsckfVio::imuCallback, this);
+  acc_sub = nh.subscribe("acc", 50,
+      &MsckfVio::accCallback, this);
+  gyr_sub = nh.subscribe("gyr", 50,
+      &MsckfVio::gyrCallback, this);
   feature_sub = nh.subscribe("features", 40,
       &MsckfVio::featureCallback, this);
 

@@ -104,6 +104,20 @@ class MsckfVio {
     void imuCallback(const sensor_msgs::ImuConstPtr& msg);
 
     /*
+    * @brief accCallback
+    *    Callback function for the t265 accelerometer message.
+    * @param msg IMU msg.
+    */
+    void accCallback(const sensor_msgs::ImuConstPtr& msg);
+
+    /*
+    * @brief gyrCallback
+    *    Callback function for the t265 gyroscope message.
+    * @param msg IMU msg.
+    */
+    void gyrCallback(const sensor_msgs::ImuConstPtr& msg);
+
+    /*
      * @brief featureCallback
      *    Callback function for feature measurements.
      * @param msg Stereo feature measurements.
@@ -218,6 +232,8 @@ class MsckfVio {
 
     // Subscribers and publishers
     ros::Subscriber imu_sub;
+    ros::Subscriber acc_sub;
+    ros::Subscriber gyr_sub;
     ros::Subscriber feature_sub;
     ros::Publisher odom_pub;
     ros::Publisher feature_pub;
@@ -249,6 +265,9 @@ class MsckfVio {
     ros::Publisher mocap_odom_pub;
     geometry_msgs::TransformStamped raw_mocap_odom_msg;
     Eigen::Isometry3d mocap_initial_frame;
+
+    Eigen::Vector3d acc_buf;
+    bool is_acc_valid;
 };
 
 typedef MsckfVio::Ptr MsckfVioPtr;

@@ -31,7 +31,8 @@ ImageProcessor::ImageProcessor(ros::NodeHandle& n) :
   //img_transport(n),
   stereo_sub(10),
   prev_features_ptr(new GridFeatures()),
-  curr_features_ptr(new GridFeatures()) {
+  curr_features_ptr(new GridFeatures()),
+  is_acc_valid(false) {
     fp.open("/home/zhangtao/dbglog/msckf/msckf_imgproc_log.txt",std::fstream::out);
     if(fp.fail())
     {
@@ -206,6 +207,10 @@ bool ImageProcessor::createRosIO() {
   stereo_sub.registerCallback(&ImageProcessor::stereoCallback, this);
   imu_sub = nh.subscribe("imu", 50,
       &ImageProcessor::imuCallback, this);
+  acc_sub = nh.subscribe("acc", 50,
+      &ImageProcessor::accCallback, this);
+  gyr_sub = nh.subscribe("gyr", 50,
+      &ImageProcessor::gyrCallback, this);
 
   return true;
 }
@@ -326,6 +331,27 @@ void ImageProcessor::imuCallback(
   if (is_first_img) return;
   imu_msg_buffer.push_back(*msg);
   imu_msg_buffer2.push_back(*msg);
+  return;
+}
+
+void ImageProcessor::accCallback(const sensor_msgs::ImuConstPtr& msg) {
+  acc_buf = Eigen::Vector3d(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+  is_acc_valid = true;
+  return;    
+}
+
+void ImageProcessor::gyrCallback(const sensor_msgs::ImuConstPtr& msg) {
+  if (is_first_img) return;
+  if(!is_acc_valid) return;
+
+    auto newimumsg = *msg;
+    newimumsg.linear_acceleration.x = acc_buf.x();
+    newimumsg.linear_acceleration.y = acc_buf.y();
+    newimumsg.linear_acceleration.z = acc_buf.z();
+
+  imu_msg_buffer.push_back(std::move(newimumsg));
+  imu_msg_buffer2.push_back(std::move(newimumsg));    
+
   return;
 }
 
@@ -1104,7 +1130,16 @@ void ImageProcessor::undistortPoints(
     cv::undistortPoints(pts_in, pts_out, K, distortion_coeffs,
                         rectification_matrix, K_new);
   } else if (distortion_model == "equidistant") {
-    cv::fisheye::undistortPoints(pts_in, pts_out, K, distortion_coeffs,
+    cv::Vec4d fe_coef;
+    fe_coef[0] = distortion_coeffs[0];
+    fe_coef[1] = distortion_coeffs[1];
+    fe_coef[2] = distortion_coeffs[2];
+    fe_coef[3] = distortion_coeffs[3];
+
+    //(K.size() == Size(3,3) && (K.type() == CV_32F || K.type() == CV_64F) && D.total() == 4)
+
+
+    cv::fisheye::undistortPoints(pts_in, pts_out, K, fe_coef,
                                  rectification_matrix, K_new);
   } else {
     ROS_WARN_ONCE("The model %s is unrecognized, use radtan instead...",
@@ -1133,7 +1168,12 @@ vector<cv::Point2f> ImageProcessor::distortPoints(
     cv::projectPoints(homogenous_pts, cv::Vec3d::zeros(), cv::Vec3d::zeros(), K,
                       distortion_coeffs, pts_out);
   } else if (distortion_model == "equidistant") {
-    cv::fisheye::distortPoints(pts_in, pts_out, K, distortion_coeffs);
+    cv::Vec4d fe_coef;
+    fe_coef[0] = distortion_coeffs[0];
+    fe_coef[1] = distortion_coeffs[1];
+    fe_coef[2] = distortion_coeffs[2];
+    fe_coef[3] = distortion_coeffs[3];
+    cv::fisheye::distortPoints(pts_in, pts_out, K, fe_coef);
   } else {
     ROS_WARN_ONCE("The model %s is unrecognized, using radtan instead...",
                   distortion_model.c_str());
